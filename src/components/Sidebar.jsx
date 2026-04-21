@@ -1,27 +1,36 @@
+// Sidebar.jsx — Navegación lateral actualizada
+// Cajero ahora tiene acceso al Monitor de Pedidos
+// Botón (?) en la parte inferior lanza el tour guiado
 import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
   UtensilsCrossed, Banknote, ChefHat, LayoutDashboard,
-  LogOut, ChevronLeft, ChevronRight, ClipboardList, User,
+  LogOut, ChevronLeft, ChevronRight, ClipboardList,
+  User, Package, Users, LayoutList, HelpCircle,
 } from 'lucide-react';
 import api from '../api/axios';
 
 const NAV = {
   cliente: [
     { label: 'Menú',        icon: UtensilsCrossed, path: '/menu'    },
-    { label: 'Mis pedidos', icon: ClipboardList,   path: '/orders'  },
+    { label: 'Mis pedidos', icon: ClipboardList,   path: '/monitor' },
   ],
   cajero: [
     { label: 'Panel Caja',  icon: Banknote,        path: '/cashier' },
+    { label: 'Monitor',     icon: LayoutList,      path: '/monitor' },
+    { label: 'Menú',        icon: UtensilsCrossed, path: '/menu'    },
   ],
   cocina: [
-    { label: 'Cocina',      icon: ChefHat,         path: '/kitchen' },
+    { label: 'Monitor',     icon: LayoutList,      path: '/monitor' },
+    { label: 'Inventario',  icon: Package,         path: '/inventory' },
   ],
   admin: [
     { label: 'Dashboard',   icon: LayoutDashboard, path: '/admin'   },
-    { label: 'Cocina',      icon: ChefHat,         path: '/kitchen' },
+    { label: 'Monitor',     icon: LayoutList,      path: '/monitor' },
     { label: 'Caja',        icon: Banknote,        path: '/cashier' },
     { label: 'Menú',        icon: UtensilsCrossed, path: '/menu'    },
+    { label: 'Inventario',  icon: Package,         path: '/inventory' },
+    { label: 'Empleados',   icon: Users,           path: '/employees' },
   ],
 };
 
@@ -36,7 +45,8 @@ const initials = (name = '') =>
   name.split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
 
 export default function Sidebar() {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed,    setCollapsed]    = useState(false);
+  const [helpTooltip,  setHelpTooltip]  = useState(false);
   const navigate  = useNavigate();
   const location  = useLocation();
   const user      = JSON.parse(localStorage.getItem('user') || '{}');
@@ -47,6 +57,11 @@ export default function Sidebar() {
     try { await api.post('/auth/logout/'); } catch {}
     localStorage.clear();
     navigate('/login');
+  };
+
+  const handleStartTour = () => {
+    setHelpTooltip(false);
+    window.dispatchEvent(new CustomEvent('start-tour'));
   };
 
   const navBtn = (active) => ({
@@ -89,7 +104,7 @@ export default function Sidebar() {
         zIndex: 200, overflow: 'hidden',
       }}>
 
-        {/* Decorative top stripe */}
+        {/* Franja decorativa superior */}
         <div style={{
           height: 3,
           background: 'linear-gradient(90deg, var(--accent), var(--gold), var(--green))',
@@ -115,8 +130,7 @@ export default function Sidebar() {
             <span style={{
               fontFamily: 'Cormorant Garamond, serif',
               fontSize: 22, color: 'var(--text)',
-              whiteSpace: 'nowrap', letterSpacing: '0.05em',
-              fontWeight: 600,
+              whiteSpace: 'nowrap', letterSpacing: '0.05em', fontWeight: 600,
             }}>
               Kusillu
             </span>
@@ -213,8 +227,54 @@ export default function Sidebar() {
         {/* Divider */}
         <div style={{ height: 1, background: 'var(--border)', margin: '0 8px' }} />
 
-        {/* Bottom */}
+        {/* Parte inferior */}
         <div style={{ padding: '8px 8px 14px', display: 'flex', flexDirection: 'column', gap: 1 }}>
+
+          {/* Botón de ayuda (?) */}
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={handleStartTour}
+              onMouseEnter={() => !collapsed && setHelpTooltip(true)}
+              onMouseLeave={() => setHelpTooltip(false)}
+              title={collapsed ? 'Guía de inicio' : undefined}
+              style={{
+                ...auxBtn,
+                color: 'var(--accent-light)',
+                background: 'rgba(207,100,48,0.06)',
+                border: '1px solid rgba(207,100,48,0.15)',
+                marginBottom: 2,
+              }}
+              onMouseEnterCapture={e => {
+                e.currentTarget.style.background = 'rgba(207,100,48,0.14)';
+                e.currentTarget.style.color = 'var(--accent)';
+              }}
+              onMouseLeaveCapture={e => {
+                e.currentTarget.style.background = 'rgba(207,100,48,0.06)';
+                e.currentTarget.style.color = 'var(--accent-light)';
+              }}
+            >
+              <HelpCircle size={16} style={{ flexShrink: 0 }} />
+              {!collapsed && <span style={{ fontSize: 13 }}>Guía de inicio</span>}
+            </button>
+
+            {/* Tooltip */}
+            {helpTooltip && !collapsed && (
+              <div style={{
+                position: 'absolute', bottom: '110%', left: 0, right: 0,
+                background: 'var(--surface)',
+                border: '1px solid rgba(207,100,48,0.3)',
+                borderRadius: 8, padding: '8px 12px',
+                fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5,
+                boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+                animation: 'fadeUp 0.2s ease',
+                zIndex: 300,
+              }}>
+                Repasa el tutorial interactivo en cualquier momento.
+              </div>
+            )}
+          </div>
+
+          {/* Colapsar */}
           <button
             onClick={() => setCollapsed(c => !c)}
             title={collapsed ? 'Expandir' : 'Colapsar'}
@@ -230,10 +290,11 @@ export default function Sidebar() {
           >
             {collapsed
               ? <ChevronRight size={16} />
-              : <><ChevronLeft size={16} /><span>Guardar</span></>
+              : <><ChevronLeft size={16} /><span>Colapsar</span></>
             }
           </button>
 
+          {/* Salir */}
           <button
             onClick={handleLogout}
             title={collapsed ? 'Salir' : undefined}
@@ -253,11 +314,15 @@ export default function Sidebar() {
         </div>
       </aside>
 
-      {/* Spacer */}
+      {/* Spacer para que el contenido no quede debajo del sidebar */}
       <div style={{
         width: W, flexShrink: 0,
         transition: 'width 0.28s cubic-bezier(.4,0,.2,1)',
       }} />
+
+      <style>{`
+        @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+      `}</style>
     </>
   );
 }

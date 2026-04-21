@@ -1,15 +1,13 @@
+// C:\laragon\www\Proyecto-Django\frontend\src\components\Layout.jsx
 import Sidebar from './Sidebar';
+import GuidedTour from './GuidedTour';
+import Chatbot from './Chatbot';
 
-/**
- * Layout — envuelve todas las páginas autenticadas.
- * Agrega el Sidebar a la izquierda y el contenido a la derecha.
- *
- * Uso:
- *   <Layout>
- *     <TuPagina />
- *   </Layout>
- */
 export default function Layout({ children }) {
+  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  // El chatbot sólo aparece para roles operacionales (no para clientes)
+  const showChatbot = ['admin', 'cajero', 'cocina'].includes(user.rol);
+
   return (
     <div style={{
       display: 'flex',
@@ -17,9 +15,11 @@ export default function Layout({ children }) {
       background: 'var(--bg)',
     }}>
       <Sidebar />
+      <GuidedTour />
       <main style={{ flex: 1, minWidth: 0 }}>
         {children}
       </main>
+      {showChatbot && <Chatbot />}
     </div>
   );
 }
