@@ -1,9 +1,11 @@
+// frontend/src/context/CartContext.jsx
 import { createContext, useContext, useState } from 'react';
 
 const CartContext = createContext();
 
 export function CartProvider({ children }) {
-  const [items, setItems] = useState([]);
+  const [items,      setItems]      = useState([]);
+  const [mesaActual, setMesaActual] = useState(null); // { id, numero }
 
   const addItem = (producto) => {
     setItems(prev => {
@@ -17,12 +19,18 @@ export function CartProvider({ children }) {
 
   const removeItem = (id) => setItems(prev => prev.filter(i => i.id !== id));
 
-  const clearCart = () => setItems([]);
+  const clearCart = () => {
+    setItems([]);
+    setMesaActual(null);
+  };
 
   const total = items.reduce((sum, i) => sum + Number(i.precio) * i.cantidad, 0);
 
   return (
-    <CartContext.Provider value={{ items, addItem, removeItem, clearCart, total }}>
+    <CartContext.Provider value={{
+      items, addItem, removeItem, clearCart, total,
+      mesaActual, setMesaActual,
+    }}>
       {children}
     </CartContext.Provider>
   );

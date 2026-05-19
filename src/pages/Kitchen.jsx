@@ -1,748 +1,520 @@
-// Kitchen.jsx — Monitor de Pedidos con Swipe Gestures
-// Swipe derecha: avanzar estado | Swipe izquierda: cancelar pedido
-import { useEffect, useState, useRef, useCallback } from 'react';
-import {
-  LayoutList, Clock, CheckCircle, RefreshCw, XCircle, X,
-  ChefHat, Banknote, QrCode, PlayCircle, PackageCheck,
-  User, ArrowRight, ArrowLeft, AlertTriangle,
-} from 'lucide-react';
+// frontend/src/pages/Kitchen.jsx
+// Tarjetas deslizables: derecha = avanzar estado, izquierda = cancelar
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Clock, CheckCircle, ChefHat, Package, MapPin, X } from 'lucide-react';
 import api from '../api/axios';
 
-// ── Utilidades ───────────────────────────────────────────────────────────────
-const timeAgo = (dateStr) => {
-  const diff = Math.floor((Date.now() - new Date(dateStr)) / 60000);
-  if (diff < 1) return 'Ahora';
-  if (diff < 60) return `${diff} min`;
-  const h = Math.floor(diff / 60);
-  const m = diff % 60;
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
-};
-
-const playSound = (type = 'notify') => {
-  try {
-    const ctx  = new (window.AudioContext || window.webkitAudioContext)();
-    const osc  = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.connect(gain); gain.connect(ctx.destination);
-    if (type === 'notify') {
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, ctx.currentTime);
-      gain.gain.setValueAtTime(0.3, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-      osc.start(); osc.stop(ctx.currentTime + 0.4);
-    } else {
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(523, ctx.currentTime);
-      osc.frequency.setValueAtTime(659, ctx.currentTime + 0.15);
-      osc.frequency.setValueAtTime(784, ctx.currentTime + 0.3);
-      gain.gain.setValueAtTime(0.25, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.7);
-      osc.start(); osc.stop(ctx.currentTime + 0.7);
-    }
-  } catch { /* silent */ }
-};
-
-// ── Configuración columnas Kanban ─────────────────────────────────────────────
 const COLS = [
-  {
-    id: 'en_espera', label: 'En espera', estados: ['en_espera'],
-    accent: 'var(--gold)', accentBg: 'rgba(224,168,48,0.10)',
-    border: 'rgba(224,168,48,0.30)', dot: 'var(--gold)',
-    desc: 'Pago en efectivo pendiente', emoji: '🪙',
-  },
-  {
-    id: 'preparando', label: 'Preparando', estados: ['confirmado', 'en_preparacion'],
-    accent: 'var(--accent-light)', accentBg: 'rgba(207,100,48,0.10)',
-    border: 'rgba(207,100,48,0.30)', dot: 'var(--accent)',
-    desc: 'Pedidos en cocina', emoji: '👨‍🍳',
-  },
-  {
-    id: 'listo', label: 'Listo', estados: ['listo'],
-    accent: 'var(--green)', accentBg: 'rgba(74,139,92,0.10)',
-    border: 'rgba(74,139,92,0.30)', dot: 'var(--green)',
-    desc: 'Esperando entrega', emoji: '🛎️',
-  },
+  { key: 'confirmado',     label: 'En espera',  color: 'var(--gold)',   icon: Clock       },
+  { key: 'en_preparacion', label: 'Preparando', color: 'var(--accent)', icon: ChefHat     },
+  { key: 'listo',          label: 'Listo',       color: 'var(--green)',  icon: CheckCircle },
 ];
 
-const SUB_BADGE = {
-  confirmado:     { label: 'Confirmado',  color: 'var(--gold)',         bg: 'rgba(224,168,48,0.12)' },
-  en_preparacion: { label: 'En cocina',   color: 'var(--accent-light)', bg: 'rgba(207,100,48,0.12)' },
+const ACTION_MAP = {
+  en_preparacion: 'start',
+  listo:          'ready',
+  entregado:      'deliver',
 };
 
-// ── Lógica de acciones de swipe por rol y estado ──────────────────────────────
-function getSwipeRightAction(order, rol) {
-  const esCajero = ['cajero', 'admin'].includes(rol);
-  const esCocina = ['cocina', 'admin'].includes(rol);
-  if (esCajero && order.estado === 'en_espera')
-    return { action: 'confirm_payment', label: 'Confirmar pago', color: '#e0a830', bg: 'rgba(224,168,48,0.18)', icon: '✓' };
-  if (esCocina && order.estado === 'confirmado')
-    return { action: 'start', label: 'Iniciar prep.', color: 'var(--accent-light)', bg: 'rgba(207,100,48,0.18)', icon: '▶' };
-  if (esCocina && order.estado === 'en_preparacion')
-    return { action: 'ready', label: 'Marcar listo', color: '#4a8b5c', bg: 'rgba(74,139,92,0.18)', icon: '✓' };
-  if (esCajero && order.estado === 'listo')
-    return { action: 'deliver', label: 'Entregar', color: '#4a8b5c', bg: 'rgba(74,139,92,0.18)', icon: '📦' };
-  return null;
+const NEXT = {
+  confirmado:     'en_preparacion',
+  en_preparacion: 'listo',
+  listo:          'entregado',
+};
+
+const NEXT_LABEL = {
+  confirmado:     'Iniciar preparación',
+  en_preparacion: 'Marcar listo',
+  listo:          'Entregar',
+};
+
+function elapsed(creado_en) {
+  const diff = Math.floor((Date.now() - new Date(creado_en).getTime()) / 1000);
+  if (diff < 60) return `${diff}s`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}min`;
+  return `${Math.floor(diff / 3600)}h`;
 }
 
-function getSwipeLeftAction(order, rol) {
-  const esCajero = ['cajero', 'admin'].includes(rol);
-  const esCocina = ['cocina', 'admin'].includes(rol);
-  const cancelable = ['en_espera', 'confirmado', 'en_preparacion'].includes(order.estado);
-  if (!cancelable) return null;
-  if (esCajero && order.estado === 'en_espera') return true;
-  if (esCocina && ['confirmado', 'en_preparacion'].includes(order.estado)) return true;
-  return null;
-}
-
-// ── Tarjeta con Swipe ─────────────────────────────────────────────────────────
-function SwipeableOrderCard({ order, col, userRol, onAction, onCancelRequest }) {
-  const [swipeX, setSwipeX]           = useState(0);
-  const [isSwiping, setIsSwiping]     = useState(false);
-  const [triggered, setTriggered]     = useState(false);
-  const [exitDir, setExitDir]         = useState(null); // 'right' | 'left'
-  const startXRef   = useRef(0);
-  const cardRef     = useRef(null);
-  const THRESHOLD   = 88;
-
-  const rightAction = getSwipeRightAction(order, userRol);
-  const leftAction  = getSwipeLeftAction(order, userRol);
-  const canSwipe    = !!(rightAction || leftAction);
-
-  const onPointerDown = (e) => {
-    if (!canSwipe || triggered) return;
-    startXRef.current = e.clientX;
-    setIsSwiping(true);
-    try { cardRef.current?.setPointerCapture(e.pointerId); } catch {}
-  };
-
-  const onPointerMove = (e) => {
-    if (!isSwiping) return;
-    const delta = e.clientX - startXRef.current;
-    const maxR = rightAction ? 140 : 0;
-    const maxL = leftAction  ? -140 : 0;
-    setSwipeX(Math.max(maxL, Math.min(maxR, delta)));
-  };
-
-  const onPointerUp = () => {
-    if (!isSwiping) return;
-    setIsSwiping(false);
-    if (swipeX >= THRESHOLD && rightAction) {
-      setTriggered(true);
-      setExitDir('right');
-      setSwipeX(300);
-      setTimeout(() => {
-        onAction(order.id, rightAction.action);
-      }, 350);
-    } else if (swipeX <= -THRESHOLD && leftAction) {
-      setSwipeX(0);
-      onCancelRequest(order.id);
-    } else {
-      setSwipeX(0);
-    }
-  };
-
-  const onPointerLeave = () => {
-    if (isSwiping && !triggered) {
-      setIsSwiping(false);
-      setSwipeX(0);
-    }
-  };
-
-  const progress     = Math.min(1, Math.abs(swipeX) / THRESHOLD);
-  const isGoingRight = swipeX > 0;
-  const activeHint   = isGoingRight
-    ? rightAction
-    : (leftAction ? { label: 'Cancelar', color: 'var(--danger)', bg: 'rgba(201,92,92,0.18)', icon: '✕' } : null);
-
-  const subBadge  = SUB_BADGE[order.estado];
-  const isMyOrder = userRol === 'cliente';
-
+// ── Modal de cancelación ──────────────────────────────────────────────────────
+function CancelModal({ order, onConfirm, onClose }) {
+  const [motivo, setMotivo] = useState('');
   return (
-    <div
-      ref={cardRef}
-      style={{ position: 'relative', borderRadius: 13, overflow: 'hidden', touchAction: 'pan-y', userSelect: 'none' }}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerLeave={onPointerLeave}
-    >
-      {/* ── Fondo de acción revelado por el swipe ── */}
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 2000,
+      background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+      animation: 'fadeIn 0.2s ease',
+    }}>
       <div style={{
-        position: 'absolute', inset: 0, borderRadius: 13,
-        display: 'flex', alignItems: 'center',
-        justifyContent: isGoingRight ? 'flex-start' : 'flex-end',
-        padding: '0 20px',
-        background: activeHint
-          ? (isGoingRight ? activeHint.bg : 'rgba(201,92,92,0.16)')
-          : 'transparent',
-        opacity: Math.abs(swipeX) > 12 ? 1 : 0,
-        transition: 'opacity 0.15s',
-        pointerEvents: 'none',
+        background: 'var(--surface)', border: '1px solid var(--danger)',
+        borderRadius: 16, padding: 28, width: '100%', maxWidth: 400,
+        animation: 'slideUp 0.25s ease',
       }}>
-        {activeHint && (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            color: isGoingRight ? activeHint.color : 'var(--danger)',
-            fontWeight: 800, fontSize: 13, letterSpacing: '0.04em',
-            opacity: progress, transform: `scale(${0.82 + 0.18 * progress})`,
-            transition: 'transform 0.1s',
-          }}>
-            {isGoingRight ? (
-              <><span>{activeHint.icon}</span> {activeHint.label} <ArrowRight size={14} /></>
-            ) : (
-              <><ArrowLeft size={14} /> {activeHint.label} <XCircle size={14} /></>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* ── Contenido de la tarjeta (deslizable) ── */}
-      <div style={{
-        transform: `translateX(${swipeX}px)`,
-        transition: isSwiping ? 'none' : exitDir
-          ? `transform 0.35s cubic-bezier(0.4, 0, 1, 1), opacity 0.3s`
-          : 'transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1)',
-        opacity: exitDir ? 0 : 1,
-        cursor: canSwipe ? (isSwiping ? 'grabbing' : 'grab') : 'default',
-        background: 'var(--surface)',
-        border: `1px solid ${col.border}`,
-        borderRadius: 13,
-        overflow: 'hidden',
-        position: 'relative',
-      }}>
-        {/* Indicadores de swipe sutiles */}
-        {canSwipe && !isSwiping && (
-          <div style={{
-            position: 'absolute', inset: 0, pointerEvents: 'none',
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '0 10px', opacity: 0.18, zIndex: 1,
-          }}>
-            {rightAction && <ArrowRight size={11} color={rightAction.color} />}
-            <div style={{ flex: 1 }} />
-            {leftAction && <ArrowLeft size={11} color="var(--danger)" />}
-          </div>
-        )}
-
-        {/* Header tarjeta */}
-        <div style={{
-          background: col.accentBg, borderBottom: `1px solid ${col.border}`,
-          padding: '10px 14px', display: 'flex',
-          justifyContent: 'space-between', alignItems: 'center', gap: 8,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{
-              width: 8, height: 8, borderRadius: '50%',
-              background: col.dot, animation: 'pulse 2s infinite', flexShrink: 0,
-            }} />
-            <span style={{
-              fontFamily: 'Jost, monospace', fontWeight: 700,
-              fontSize: 13, letterSpacing: 1.5, color: 'var(--text)',
-            }}>
-              #{String(order.codigo).slice(0, 8).toUpperCase()}
-            </span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{
-              display: 'flex', alignItems: 'center', gap: 4, fontSize: 11,
-              color: order.metodo_pago === 'qr' ? 'var(--accent-light)' : 'var(--gold)',
-              background: order.metodo_pago === 'qr' ? 'rgba(207,100,48,0.1)' : 'rgba(224,168,48,0.1)',
-              padding: '2px 8px', borderRadius: 10,
-            }}>
-              {order.metodo_pago === 'qr' ? <QrCode size={10} /> : <Banknote size={10} />}
-              {order.metodo_pago === 'qr' ? 'QR' : 'Efectivo'}
-            </span>
-            {subBadge && (
-              <span style={{
-                fontSize: 10, fontWeight: 600,
-                color: subBadge.color, background: subBadge.bg,
-                padding: '2px 8px', borderRadius: 10,
-              }}>
-                {subBadge.label}
-              </span>
-            )}
-          </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <h3 style={{ color: 'var(--danger)', fontSize: 18, fontFamily: 'Cormorant Garamond, serif' }}>
+            Cancelar pedido
+          </h3>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex' }}>
+            <X size={18} />
+          </button>
         </div>
-
-        {/* Cuerpo */}
-        <div style={{ padding: '10px 14px' }}>
-          {!isMyOrder && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-              <User size={12} color="var(--text-muted)" />
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{order.cliente_nombre}</span>
-            </div>
-          )}
-
-          <ul style={{ listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}>
-            {order.items.map((it, i) => (
-              <li key={i} style={{
-                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                fontSize: 12, padding: '5px 10px',
-                background: 'var(--surface2)', borderRadius: 6, color: 'var(--text)',
-              }}>
-                <span>{it.producto_nombre}</span>
-                <span style={{
-                  fontWeight: 700, color: col.accent,
-                  background: col.accentBg, padding: '1px 7px', borderRadius: 4,
-                }}>
-                  ×{it.cantidad}
-                </span>
-              </li>
-            ))}
-          </ul>
-
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{
-              color: 'var(--gold)', fontWeight: 700,
-              fontFamily: 'Cormorant Garamond, serif', fontSize: 15,
-            }}>
-              Bs. {order.total}
-            </span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--text-muted)' }}>
-              <Clock size={11} /> {timeAgo(order.creado_en)}
-            </span>
-          </div>
-
-          {/* Hint de swipe para staff */}
-          {canSwipe && (
-            <div style={{
-              marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
-              gap: 16, fontSize: 10, color: 'var(--text-dim)', opacity: 0.55,
-            }}>
-              {leftAction && (
-                <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'rgba(201,92,92,0.7)' }}>
-                  <ArrowLeft size={10} /> Cancelar
-                </span>
-              )}
-              {rightAction && leftAction && <span>|</span>}
-              {rightAction && (
-                <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  {rightAction.label} <ArrowRight size={10} />
-                </span>
-              )}
-            </div>
-          )}
-
-          {/* Pedido listo para cliente */}
-          {isMyOrder && order.estado === 'listo' && (
-            <div style={{
-              marginTop: 10, display: 'flex', alignItems: 'center', gap: 6,
-              background: 'rgba(74,139,92,0.1)',
-              border: '1px solid rgba(74,139,92,0.25)',
-              borderRadius: 8, padding: '8px 10px',
-            }}>
-              <CheckCircle size={13} color="var(--green)" />
-              <span style={{ fontSize: 12, color: 'var(--green)', fontWeight: 600 }}>
-                ¡Tu pedido está listo!
-              </span>
-            </div>
-          )}
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+          Pedido <strong style={{ color: 'var(--text)', fontFamily: 'monospace' }}>
+            #{String(order.codigo).slice(0, 8).toUpperCase()}
+          </strong>
+        </p>
+        <textarea
+          autoFocus
+          value={motivo}
+          onChange={e => setMotivo(e.target.value)}
+          placeholder="Motivo de cancelación (obligatorio)..."
+          style={{
+            width: '100%', minHeight: 90, padding: '10px 14px',
+            borderRadius: 8, border: '1px solid var(--border)',
+            background: 'var(--surface2)', color: 'var(--text)',
+            fontSize: 13, resize: 'none', marginBottom: 16,
+          }}
+        />
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button
+            onClick={onClose}
+            style={{
+              flex: 1, padding: '10px', borderRadius: 8,
+              border: '1px solid var(--border)',
+              background: 'transparent', color: 'var(--text-muted)',
+              cursor: 'pointer', fontSize: 13,
+            }}
+          >
+            Volver
+          </button>
+          <button
+            onClick={() => motivo.trim() && onConfirm(motivo.trim())}
+            disabled={!motivo.trim()}
+            style={{
+              flex: 1, padding: '10px', borderRadius: 8, border: 'none',
+              background: motivo.trim() ? 'var(--danger)' : 'var(--surface3)',
+              color: motivo.trim() ? '#fff' : 'var(--text-dim)',
+              cursor: motivo.trim() ? 'pointer' : 'not-allowed',
+              fontSize: 13, fontWeight: 600,
+            }}
+          >
+            Confirmar cancelación
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
-// ── Monitor Principal ─────────────────────────────────────────────────────────
+// ── Tarjeta deslizable ────────────────────────────────────────────────────────
+function SwipeCard({ order, onAdvance, onCancel, colColor }) {
+  const [swipeX, setSwipeX]   = useState(0);
+  const [swiping, setSwiping] = useState(false);
+  const [done, setDone]       = useState(false);
+  const [dir, setDir]         = useState(null); // 'right' | 'left'
+  const startX = useRef(0);
+  const cardRef = useRef(null);
+  const THRESHOLD = 90;
+
+  const user     = JSON.parse(localStorage.getItem('user') || '{}');
+  const isStaff  = ['cajero', 'cocina', 'admin'].includes(user.rol);
+  const isUrgent = order.estado === 'confirmado' &&
+    (Date.now() - new Date(order.creado_en).getTime()) / 1000 > 600;
+
+  const canSwipe = isStaff && !done;
+
+  const onPointerDown = (e) => {
+    if (!canSwipe) return;
+    startX.current = e.clientX;
+    setSwiping(true);
+    try { cardRef.current?.setPointerCapture(e.pointerId); } catch {}
+  };
+
+  const onPointerMove = (e) => {
+    if (!swiping || !canSwipe) return;
+    const delta = e.clientX - startX.current;
+    // Derecha: solo avanzar. Izquierda: solo si puede cancelarse
+    if (delta > 0) setSwipeX(Math.min(160, delta));
+    else           setSwipeX(Math.max(-160, delta));
+  };
+
+  const onPointerUp = () => {
+    if (!swiping) return;
+    setSwiping(false);
+    const abs = Math.abs(swipeX);
+    if (abs >= THRESHOLD) {
+      if (swipeX > 0) {
+        // Deslizó derecha → avanzar
+        setDir('right');
+        setDone(true);
+        setSwipeX(300);
+        setTimeout(() => onAdvance(order.id, NEXT[order.estado]), 400);
+      } else {
+        // Deslizó izquierda → cancelar (solo si el estado lo permite)
+        const cancelable = ['en_espera', 'confirmado', 'en_preparacion'].includes(order.estado);
+        if (cancelable) {
+          setDir('left');
+          setDone(true);
+          setSwipeX(-300);
+          setTimeout(() => onCancel(order), 400);
+        } else {
+          setSwipeX(0);
+        }
+      }
+    } else {
+      setSwipeX(0);
+    }
+  };
+
+  const progress = Math.min(1, Math.abs(swipeX) / THRESHOLD);
+  const goingRight = swipeX > 0;
+  const goingLeft  = swipeX < 0;
+  const cancelable = ['en_espera', 'confirmado', 'en_preparacion'].includes(order.estado);
+
+  return (
+    <div style={{
+      position: 'relative', borderRadius: 12,
+      marginBottom: 12, overflow: 'hidden',
+      touchAction: 'pan-y', userSelect: 'none',
+    }}>
+
+      {/* Fondo derecha (avanzar) */}
+      <div style={{
+        position: 'absolute', inset: 0, borderRadius: 12,
+        background: `${colColor}22`,
+        display: 'flex', alignItems: 'center', justifyContent: 'flex-start',
+        paddingLeft: 20,
+        opacity: goingRight ? progress : 0,
+        transition: swiping ? 'none' : 'opacity 0.2s',
+        pointerEvents: 'none',
+      }}>
+        <span style={{
+          color: colColor, fontWeight: 800, fontSize: 13,
+          transform: `scale(${0.8 + 0.2 * progress})`,
+          transition: swiping ? 'none' : 'transform 0.2s',
+        }}>
+          ✓ {NEXT_LABEL[order.estado]}
+        </span>
+      </div>
+
+      {/* Fondo izquierda (cancelar) */}
+      {cancelable && (
+        <div style={{
+          position: 'absolute', inset: 0, borderRadius: 12,
+          background: 'rgba(201,92,92,0.15)',
+          display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
+          paddingRight: 20,
+          opacity: goingLeft ? progress : 0,
+          transition: swiping ? 'none' : 'opacity 0.2s',
+          pointerEvents: 'none',
+        }}>
+          <span style={{
+            color: 'var(--danger)', fontWeight: 800, fontSize: 13,
+            transform: `scale(${0.8 + 0.2 * progress})`,
+            transition: swiping ? 'none' : 'transform 0.2s',
+          }}>
+            ✕ Cancelar
+          </span>
+        </div>
+      )}
+
+      {/* Tarjeta principal */}
+      <div
+        ref={cardRef}
+        style={{
+          transform: `translateX(${swipeX}px)`,
+          transition: swiping ? 'none' : (done ? 'transform 0.35s ease, opacity 0.35s' : 'transform 0.4s cubic-bezier(0.34,1.56,0.64,1)'),
+          opacity: done ? 0 : 1,
+          background: 'var(--surface)',
+          border: `1px solid ${isUrgent ? 'rgba(201,92,92,0.55)' : 'var(--border)'}`,
+          borderLeft: `4px solid ${colColor}`,
+          borderRadius: 12, padding: 16,
+          boxShadow: isUrgent ? '0 0 16px rgba(201,92,92,0.2)' : '0 2px 8px rgba(0,0,0,0.2)',
+          cursor: canSwipe ? 'grab' : 'default',
+          position: 'relative',
+        }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={onPointerUp}
+      >
+
+        {/* Hint de swipe (visible solo si no se ha deslizado aún) */}
+        {canSwipe && swipeX === 0 && !done && (
+          <div style={{
+            position: 'absolute', top: 8, right: 10,
+            fontSize: 10, color: 'rgba(255,255,255,0.22)',
+            display: 'flex', alignItems: 'center', gap: 3,
+            pointerEvents: 'none',
+          }}>
+            ← desliza →
+          </div>
+        )}
+
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', fontFamily: 'monospace' }}>
+                #{String(order.codigo).substring(0, 8).toUpperCase()}
+              </p>
+              {order.mesa_numero && (
+                <span style={{
+                  display: 'flex', alignItems: 'center', gap: 4,
+                  fontSize: 11, fontWeight: 700,
+                  background: 'rgba(74,139,92,0.15)',
+                  color: 'var(--green)',
+                  border: '1px solid rgba(74,139,92,0.35)',
+                  padding: '2px 8px', borderRadius: 12,
+                }}>
+                  <MapPin size={10} /> Mesa {order.mesa_numero}
+                </span>
+              )}
+              {isUrgent && (
+                <span style={{ fontSize: 10, background: 'rgba(201,92,92,0.15)', color: 'var(--danger)', padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>
+                  ⚠ URGENTE
+                </span>
+              )}
+            </div>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 3 }}>
+              {order.cliente_nombre}
+            </p>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <p style={{ fontSize: 12, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Clock size={11} /> {elapsed(order.creado_en)}
+            </p>
+            <p style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+              {order.metodo_pago === 'qr' ? '📲 QR' : '💵 Efectivo'}
+            </p>
+          </div>
+        </div>
+
+        {/* Items */}
+        <div style={{ marginBottom: 12 }}>
+          {order.items.map((item, idx) => (
+            <div key={idx} style={{
+              display: 'flex', justifyContent: 'space-between',
+              padding: '6px 0', borderBottom: '1px solid var(--border)',
+            }}>
+              <span style={{ fontSize: 13, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                {item.tipo === 'envasado' ? <Package size={12} color="var(--text-dim)" /> : '🍽'}
+                {item.cantidad}× {item.producto_nombre}
+              </span>
+              <span style={{ fontSize: 12, color: 'var(--gold)' }}>
+                Bs.{(item.cantidad * item.precio_unitario).toFixed(2)}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Total */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+          <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', fontFamily: 'Cormorant Garamond, serif' }}>
+            Total: Bs. {parseFloat(order.total).toFixed(2)}
+          </span>
+          {/* Indicador visual del próximo estado */}
+          {isStaff && (
+            <span style={{ fontSize: 11, color: colColor, opacity: 0.7 }}>
+              → {NEXT_LABEL[order.estado]}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Overlay de éxito post-swipe */}
+      {done && (
+        <div style={{
+          position: 'absolute', inset: 0, borderRadius: 12,
+          background: dir === 'right' ? `${colColor}20` : 'rgba(201,92,92,0.15)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          animation: 'fadeIn 0.2s ease',
+        }}>
+          <p style={{ color: dir === 'right' ? colColor : 'var(--danger)', fontWeight: 700, fontSize: 13 }}>
+            {dir === 'right' ? '✅ Actualizando...' : '❌ Cancelando...'}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Componente principal ──────────────────────────────────────────────────────
 export default function Kitchen() {
-  const user = JSON.parse(localStorage.getItem('user') || '{}');
-
   const [orders,      setOrders]      = useState([]);
-  const [loading,     setLoading]     = useState(false);
-  const [lastUpdate,  setLastUpdate]  = useState(new Date());
-  const [actionMsg,   setActionMsg]   = useState('');
-  const [actionOk,    setActionOk]    = useState(false);
-
-  // Modal de cancelación en DOS pasos
-  const [cancelStep,   setCancelStep]   = useState(0); // 0=cerrado, 1=confirmar, 2=motivo
-  const [cancelOrder,  setCancelOrder]  = useState(null);
-  const [motivo,       setMotivo]       = useState('');
-  const [cancelLoading, setCancelLoading] = useState(false);
-
-  const prevCountRef  = useRef(0);
-  const prevListoRef  = useRef([]);
+  const [loading,     setLoading]     = useState(true);
+  const [cancelOrder, setCancelOrder] = useState(null); // pedido pendiente de cancelar
+  const prevIds = useRef(new Set());
 
   const fetchOrders = useCallback(async () => {
-    setLoading(true);
     try {
       const r = await api.get('/orders/monitor/');
-      const data = r.data;
-      setOrders(data);
-      setLastUpdate(new Date());
-      if (['cajero', 'cocina', 'admin'].includes(user.rol)) {
-        if (data.length > prevCountRef.current && prevCountRef.current !== 0) playSound('notify');
+      const active = r.data.filter(o =>
+        ['confirmado', 'en_preparacion', 'listo'].includes(o.estado)
+      );
+      const newIds = new Set(active.map(o => o.id));
+      const hasNew = active.some(o => !prevIds.current.has(o.id));
+      if (hasNew && prevIds.current.size > 0) {
+        try {
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain); gain.connect(ctx.destination);
+          osc.frequency.value = 880;
+          gain.gain.setValueAtTime(0.3, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+          osc.start(); osc.stop(ctx.currentTime + 0.5);
+        } catch {}
       }
-      if (user.rol === 'cliente') {
-        const listos = data.filter(o => o.estado === 'listo').map(o => o.id);
-        const nuevo  = listos.find(id => !prevListoRef.current.includes(id));
-        if (nuevo && prevListoRef.current.length > 0) playSound('success');
-        prevListoRef.current = listos;
-      }
-      prevCountRef.current = data.length;
-    } finally { setLoading(false); }
-  }, [user.rol]);
+      prevIds.current = newIds;
+      setOrders(active);
+    } catch {}
+    finally { setLoading(false); }
+  }, []);
 
   useEffect(() => {
     fetchOrders();
     const iv = setInterval(fetchOrders, 10000);
     return () => clearInterval(iv);
-  }, [fetchOrders]);
+  }, []);
 
-  const flash = (text, ok = false) => {
-    setActionMsg(text);
-    setActionOk(ok);
-    setTimeout(() => setActionMsg(''), 4000);
-  };
-
-  const handleAction = async (orderId, action) => {
+  const advance = async (id, nextEstado) => {
+    const action = ACTION_MAP[nextEstado];
+    if (!action) return;
     try {
-      await api.patch(`/orders/monitor/${orderId}/action/`, { action });
-      flash('✅ Acción completada.', true);
+      await api.patch(`/orders/monitor/${id}/action/`, { action });
       fetchOrders();
-    } catch (err) {
-      flash(err.response?.data?.detail || 'Error al procesar la acción.');
-    }
+    } catch (e) { console.error(e); }
   };
 
-  const openCancelRequest = (orderId) => {
-    setCancelOrder(orderId);
-    setCancelStep(1); // primer paso: confirmar
-    setMotivo('');
+  const handleCancelRequest = (order) => {
+    setCancelOrder(order);
   };
 
-  const handleCancelConfirm = () => {
-    setCancelStep(2); // segundo paso: motivo
-  };
-
-  const handleCancelSubmit = async (e) => {
-    e.preventDefault();
-    if (!motivo.trim()) return;
-    setCancelLoading(true);
+  const handleCancelConfirm = async (motivo) => {
+    if (!cancelOrder) return;
     try {
-      await api.patch(`/orders/monitor/${cancelOrder}/action/`, {
+      await api.patch(`/orders/monitor/${cancelOrder.id}/action/`, {
         action: 'cancel',
         motivo_cancelacion: motivo,
       });
-      flash('Pedido cancelado. Stock devuelto.', false);
-      fetchOrders();
-    } catch (err) {
-      flash(err.response?.data?.detail || 'Error al cancelar.');
-    } finally {
-      setCancelLoading(false);
-      setCancelStep(0);
       setCancelOrder(null);
-      setMotivo('');
-    }
+      fetchOrders();
+    } catch (e) { console.error(e); }
   };
 
-  const closeCancelModal = () => {
-    setCancelStep(0);
-    setCancelOrder(null);
-    setMotivo('');
-  };
-
-  const ROLE_LABEL = {
-    cliente: 'Mis pedidos', cajero: 'Monitor de caja',
-    cocina: 'Monitor de cocina', admin: 'Monitor general',
-  };
+  const byCol = (key) => orders.filter(o => o.estado === key);
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
 
+      {/* Modal cancelación */}
+      {cancelOrder && (
+        <CancelModal
+          order={cancelOrder}
+          onConfirm={handleCancelConfirm}
+          onClose={() => { setCancelOrder(null); fetchOrders(); }}
+        />
+      )}
+
       {/* Header */}
       <header style={{
-        position: 'sticky', top: 0, zIndex: 100,
-        background: 'rgba(12,8,6,0.95)', backdropFilter: 'blur(20px)',
+        position: 'sticky', top: 0, zIndex: 50,
+        background: 'rgba(12,8,6,0.96)', backdropFilter: 'blur(20px)',
         borderBottom: '1px solid var(--border)',
-        padding: '0 24px', height: 62,
+        padding: '0 28px', height: 60,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       }}>
-        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 2, background: 'linear-gradient(90deg, var(--gold), var(--accent), var(--green))' }} />
+        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 2, background: 'linear-gradient(90deg, var(--green), var(--gold), var(--accent))' }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <LayoutList size={19} color="var(--accent)" />
-          <div>
-            <h2 style={{ fontSize: 20, color: 'var(--text)', fontFamily: 'Cormorant Garamond, serif', lineHeight: 1.1 }}>
-              Monitor de pedidos
-            </h2>
-            <p style={{ fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
-              {ROLE_LABEL[user.rol] || 'Vista general'}
-            </p>
-          </div>
+          <ChefHat size={18} color="var(--accent)" />
+          <h2 style={{ fontSize: 20, fontFamily: 'Cormorant Garamond, serif', color: 'var(--text)' }}>
+            Monitor de Pedidos
+          </h2>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          {actionMsg && (
-            <span style={{
-              fontSize: 12, padding: '5px 12px', borderRadius: 7,
-              color: actionOk ? 'var(--green)' : 'var(--danger)',
-              background: actionOk ? 'rgba(74,139,92,0.12)' : 'var(--danger-bg)',
-              animation: 'fadeIn 0.3s ease',
-            }}>
-              {actionMsg}
+        <div style={{ display: 'flex', gap: 18 }}>
+          {COLS.map(col => (
+            <span key={col.key} style={{ fontSize: 13, color: col.color, fontWeight: 600 }}>
+              {byCol(col.key).length} {col.label}
             </span>
-          )}
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            {lastUpdate.toLocaleTimeString()}
-          </span>
-          <button onClick={fetchOrders} disabled={loading} style={{
-            background: 'var(--surface)', border: '1px solid var(--border)',
-            color: 'var(--text-muted)', padding: '7px 11px', borderRadius: 8,
-            display: 'flex', cursor: 'pointer',
-          }}>
-            <RefreshCw size={13} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
-          </button>
+          ))}
         </div>
       </header>
 
       {/* Leyenda de gestos */}
-      {['cajero', 'cocina', 'admin'].includes(user.rol) && (
-        <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 24,
-          padding: '10px 24px', background: 'rgba(255,255,255,0.02)',
-          borderBottom: '1px solid var(--border)', fontSize: 11, color: 'var(--text-dim)',
-        }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{
-              width: 28, height: 16, borderRadius: 4, background: 'rgba(74,139,92,0.25)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9,
-            }}>→</span>
-            Avanzar estado
-          </span>
-          <span style={{ opacity: 0.3 }}>|</span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{
-              width: 28, height: 16, borderRadius: 4, background: 'rgba(201,92,92,0.25)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9,
-            }}>←</span>
-            Cancelar pedido
-          </span>
-          <span style={{ opacity: 0.3 }}>|</span>
-          <span>Desliza las tarjetas</span>
-        </div>
-      )}
-
-      {/* Kanban */}
-      <main style={{
-        padding: '20px 20px 40px',
-        display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
-        gap: 16, minHeight: 'calc(100vh - 100px)',
+      <div style={{
+        display: 'flex', justifyContent: 'center', gap: 24, padding: '10px 0',
+        borderBottom: '1px solid var(--border)',
+        background: 'rgba(255,255,255,0.02)',
       }}>
-        {COLS.map(col => {
-          const colOrders = orders.filter(o => col.estados.includes(o.estado));
-          return (
-            <div key={col.id} style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-              {/* Cabecera columna */}
-              <div style={{
-                background: col.accentBg,
-                border: `1px solid ${col.border}`,
-                borderRadius: '13px 13px 0 0', borderBottom: 'none',
-                padding: '12px 16px',
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              }}>
-                <div>
-                  <h3 style={{ color: col.accent, fontSize: 14, fontWeight: 700, letterSpacing: '0.04em' }}>
+        <span style={{ fontSize: 11, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ color: 'var(--green)', fontWeight: 700 }}>→</span> Desliza derecha para avanzar
+        </span>
+        <span style={{ fontSize: 11, color: 'var(--text-dim)', display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ color: 'var(--danger)', fontWeight: 700 }}>←</span> Desliza izquierda para cancelar
+        </span>
+      </div>
+
+      {loading ? (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh', color: 'var(--text-muted)' }}>
+          Cargando pedidos...
+        </div>
+      ) : (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, 1fr)',
+          gap: 20, padding: 24, minHeight: 'calc(100vh - 100px)',
+        }}>
+          {COLS.map(col => {
+            const colOrders = byCol(col.key);
+            const Icon = col.icon;
+            return (
+              <div key={col.key}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16,
+                  paddingBottom: 12, borderBottom: `2px solid ${col.color}33`,
+                }}>
+                  <Icon size={17} color={col.color} />
+                  <h3 style={{ fontSize: 16, fontWeight: 700, color: col.color }}>
                     {col.label}
                   </h3>
-                  <p style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 1 }}>{col.desc}</p>
-                </div>
-                <span style={{
-                  minWidth: 28, height: 28, borderRadius: '50%',
-                  background: col.accentBg, border: `1.5px solid ${col.border}`,
-                  color: col.accent, fontWeight: 700, fontSize: 13,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  transition: 'transform 0.3s',
-                  transform: colOrders.length > 0 ? 'scale(1.1)' : 'scale(1)',
-                }}>
-                  {colOrders.length}
-                </span>
-              </div>
-
-              {/* Tarjetas */}
-              <div style={{
-                flex: 1, border: `1px solid ${col.border}`,
-                borderRadius: '0 0 13px 13px',
-                padding: 12, display: 'flex', flexDirection: 'column', gap: 10,
-                minHeight: 300, background: 'rgba(15,9,5,0.4)',
-                overflowY: 'auto', maxHeight: 'calc(100vh - 190px)',
-              }}>
-                {loading && colOrders.length === 0 ? (
-                  [1, 2].map(i => (
-                    <div key={i} style={{
-                      height: 110, borderRadius: 13, background: 'var(--surface)',
-                      animation: 'pulse 1.5s infinite',
-                      animationDelay: `${i * 0.15}s`,
-                    }} />
-                  ))
-                ) : colOrders.length === 0 ? (
-                  <div style={{
-                    flex: 1, display: 'flex', flexDirection: 'column',
-                    alignItems: 'center', justifyContent: 'center',
-                    gap: 8, padding: '32px 16px', opacity: 0.35,
-                    animation: 'fadeIn 0.5s ease',
+                  <span style={{
+                    marginLeft: 'auto', background: `${col.color}22`,
+                    color: col.color, border: `1px solid ${col.color}44`,
+                    padding: '2px 10px', borderRadius: 20, fontSize: 12, fontWeight: 700,
                   }}>
-                    <div style={{ fontSize: 36 }}>{col.emoji}</div>
-                    <p style={{ fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
-                      Sin pedidos aquí
-                    </p>
+                    {colOrders.length}
+                  </span>
+                </div>
+
+                {colOrders.length === 0 ? (
+                  <div style={{
+                    padding: 28, textAlign: 'center', color: 'var(--text-dim)',
+                    fontSize: 13, borderRadius: 10,
+                    border: '1px dashed var(--border)', opacity: 0.5,
+                  }}>
+                    Sin pedidos
                   </div>
                 ) : (
                   colOrders.map(order => (
-                    <div key={order.id} style={{ animation: 'cardIn 0.35s ease' }}>
-                      <SwipeableOrderCard
-                        order={order}
-                        col={col}
-                        userRol={user.rol}
-                        onAction={handleAction}
-                        onCancelRequest={openCancelRequest}
-                      />
-                    </div>
+                    <SwipeCard
+                      key={order.id}
+                      order={order}
+                      colColor={col.color}
+                      onAdvance={advance}
+                      onCancel={handleCancelRequest}
+                    />
                   ))
                 )}
               </div>
-            </div>
-          );
-        })}
-      </main>
-
-      {/* ── MODAL CANCELACIÓN — Paso 1: Confirmar ── */}
-      {cancelStep === 1 && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
-          backdropFilter: 'blur(8px)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          zIndex: 1000, padding: 20, animation: 'fadeIn 0.25s ease',
-        }}>
-          <div style={{
-            background: 'var(--surface)', width: '100%', maxWidth: 380,
-            borderRadius: 18, padding: 32,
-            border: '1px solid rgba(201,92,92,0.5)',
-            boxShadow: '0 20px 60px rgba(201,92,92,0.2)',
-            animation: 'slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
-          }}>
-            <div style={{ textAlign: 'center', marginBottom: 24 }}>
-              <div style={{
-                width: 64, height: 64, borderRadius: '50%',
-                background: 'rgba(201,92,92,0.1)',
-                border: '2px solid rgba(201,92,92,0.3)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                margin: '0 auto 16px',
-              }}>
-                <AlertTriangle size={28} color="var(--danger)" />
-              </div>
-              <h3 style={{
-                fontSize: 22, color: 'var(--text)',
-                fontFamily: 'Cormorant Garamond, serif', marginBottom: 8,
-              }}>
-                ¿Cancelar este pedido?
-              </h3>
-              <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                Esta acción devolverá el stock de envasados al inventario y no se puede deshacer.
-              </p>
-            </div>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={closeCancelModal} style={{
-                flex: 1, padding: '12px', borderRadius: 10,
-                background: 'var(--surface2)', border: '1px solid var(--border)',
-                color: 'var(--text-muted)', fontSize: 14, cursor: 'pointer',
-                transition: 'all 0.18s',
-              }}
-                onMouseEnter={e => { e.currentTarget.style.background = 'var(--surface3)'; e.currentTarget.style.color = 'var(--text)'; }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'var(--surface2)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
-              >
-                No, conservar
-              </button>
-              <button onClick={handleCancelConfirm} style={{
-                flex: 1, padding: '12px', borderRadius: 10,
-                background: 'var(--danger)', border: 'none',
-                color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer',
-                boxShadow: '0 4px 16px rgba(201,92,92,0.35)',
-                transition: 'all 0.18s',
-              }}
-                onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 6px 20px rgba(201,92,92,0.5)'; }}
-                onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 4px 16px rgba(201,92,92,0.35)'; }}
-              >
-                Sí, cancelar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── MODAL CANCELACIÓN — Paso 2: Motivo ── */}
-      {cancelStep === 2 && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
-          backdropFilter: 'blur(8px)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          zIndex: 1000, padding: 20, animation: 'fadeIn 0.25s ease',
-        }}>
-          <div style={{
-            background: 'var(--surface)', width: '100%', maxWidth: 440,
-            borderRadius: 18, padding: 32,
-            border: '1px solid rgba(201,92,92,0.4)',
-            boxShadow: '0 20px 60px rgba(201,92,92,0.15)',
-            animation: 'slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-              <h3 style={{
-                fontSize: 21, color: 'var(--danger)',
-                fontFamily: 'Cormorant Garamond, serif',
-                display: 'flex', alignItems: 'center', gap: 8,
-              }}>
-                <XCircle size={20} /> Motivo de cancelación
-              </h3>
-              <button onClick={closeCancelModal} style={{
-                background: 'none', border: 'none', color: 'var(--text-muted)',
-                cursor: 'pointer', padding: 4, borderRadius: 6,
-                transition: 'color 0.15s',
-              }}
-                onMouseEnter={e => { e.currentTarget.style.color = 'var(--text)'; }}
-                onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; }}
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16, lineHeight: 1.6 }}>
-              Explica por qué se está cancelando. El cliente puede ver este motivo.
-            </p>
-            <form onSubmit={handleCancelSubmit}>
-              <textarea
-                required autoFocus
-                value={motivo}
-                onChange={e => setMotivo(e.target.value)}
-                placeholder="Ej: No hay ingredientes disponibles para este platillo..."
-                style={{
-                  width: '100%', padding: '12px 14px',
-                  borderRadius: 10, border: '1px solid var(--border)',
-                  background: 'var(--surface2)', color: 'var(--text)',
-                  minHeight: 90, marginBottom: 16, resize: 'none',
-                  fontSize: 13, boxSizing: 'border-box',
-                  transition: 'border-color 0.2s',
-                  outline: 'none',
-                }}
-                onFocus={e => { e.target.style.borderColor = 'rgba(201,92,92,0.5)'; }}
-                onBlur={e => { e.target.style.borderColor = 'var(--border)'; }}
-              />
-              <button type="submit" disabled={cancelLoading || !motivo.trim()} style={{
-                width: '100%', padding: '13px',
-                background: motivo.trim() ? 'var(--danger)' : 'var(--surface3)',
-                color: motivo.trim() ? '#fff' : 'var(--text-dim)',
-                border: 'none', borderRadius: 10, fontWeight: 600,
-                cursor: motivo.trim() ? 'pointer' : 'not-allowed', fontSize: 14,
-                boxShadow: motivo.trim() ? '0 4px 16px rgba(201,92,92,0.35)' : 'none',
-                transition: 'all 0.2s',
-              }}>
-                {cancelLoading ? 'Cancelando...' : 'Confirmar cancelación'}
-              </button>
-            </form>
-          </div>
+            );
+          })}
         </div>
       )}
 
       <style>{`
-        @keyframes spin    { from { transform: rotate(0deg); }   to { transform: rotate(360deg); } }
-        @keyframes pulse   { 0%,100% { opacity: 1; }            50% { opacity: 0.45; } }
-        @keyframes fadeIn  { from { opacity: 0; }               to { opacity: 1; } }
-        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes cardIn  { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        @keyframes fadeIn  { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
       `}</style>
     </div>
   );

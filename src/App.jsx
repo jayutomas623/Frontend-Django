@@ -1,4 +1,4 @@
-// C:\laragon\www\Proyecto-Django\frontend\src\App.jsx
+// frontend/src/App.jsx
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Login          from './pages/Login';
 import Register       from './pages/Register';
@@ -6,12 +6,13 @@ import Menu           from './pages/Menu';
 import Checkout       from './pages/Checkout';
 import PaymentQR      from './pages/PaymentQR';
 import PaymentCash    from './pages/PaymentCash';
-import Kitchen        from './pages/Kitchen';   // Monitor de Pedidos
+import Kitchen        from './pages/Kitchen';
 import Cashier        from './pages/Cashier';
 import AdminDashboard from './pages/AdminDashboard';
 import Layout         from './components/Layout';
 import Inventory      from './pages/Inventory';
 import Employees      from './pages/Employees';
+import TableMap       from './pages/TableMap';
 
 function PrivateRoute({ children, roles }) {
   const token = localStorage.getItem('token');
@@ -35,10 +36,11 @@ export default function App() {
         <Route path="/payment/qr"   element={<PrivateRoute><PaymentQR /></PrivateRoute>} />
         <Route path="/payment/cash" element={<PrivateRoute><PaymentCash /></PrivateRoute>} />
 
-        {/* Monitor de pedidos — TODOS los roles autenticados */}
-        <Route path="/monitor" element={<PrivateRoute><Kitchen /></PrivateRoute>} />
+        {/* Mapa de mesas */}
+        <Route path="/mesas" element={<PrivateRoute><TableMap /></PrivateRoute>} />
 
-        {/* Redirect legacy /kitchen → /monitor */}
+        {/* Monitor de pedidos */}
+        <Route path="/monitor" element={<PrivateRoute><Kitchen /></PrivateRoute>} />
         <Route path="/kitchen" element={<Navigate to="/monitor" replace />} />
 
         {/* Personal */}

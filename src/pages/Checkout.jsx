@@ -1,11 +1,12 @@
+// frontend/src/pages/Checkout.jsx
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, QrCode, Banknote, Trash2, ShoppingBag } from 'lucide-react';
+import { ArrowLeft, QrCode, Banknote, Trash2, ShoppingBag, MapPin } from 'lucide-react';
 import { useCart } from '../context/CartContext';
 import api from '../api/axios';
 
 export default function Checkout() {
-  const { items, total, clearCart, removeItem } = useCart();
+  const { items, total, clearCart, removeItem, mesaActual } = useCart();
   const [metodoPago, setMetodoPago] = useState('qr');
   const [loading, setLoading]       = useState(false);
   const [error, setError]           = useState('');
@@ -15,14 +16,20 @@ export default function Checkout() {
     if (items.length === 0) return;
     setLoading(true); setError('');
     try {
-      const res = await api.post('/orders/', {
+      const payload = {
         metodo_pago: metodoPago,
         items: items.map(i => ({ producto_id: i.id, cantidad: i.cantidad })),
-      });
+      };
+      if (mesaActual?.id) {
+        payload.mesa_id = mesaActual.id;
+      }
+      const res = await api.post('/orders/', payload);
       clearCart();
       navigate(metodoPago === 'qr' ? '/payment/qr' : '/payment/cash', { state: { order: res.data } });
-    } catch {
-      setError('Error al crear el pedido. Intenta de nuevo.');
+    } catch (err) {
+      const data = err.response?.data;
+      const msg  = Array.isArray(data) ? data[0] : data?.detail || 'Error al crear el pedido. Intenta de nuevo.';
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -46,6 +53,20 @@ export default function Checkout() {
           </h2>
         </div>
 
+        {/* Mesa indicator */}
+        {mesaActual && (
+          <div style={{
+            background: 'rgba(74,139,92,0.1)', border: '1px solid rgba(74,139,92,0.3)',
+            borderRadius: 10, padding: '10px 16px', marginBottom: 16,
+            display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            <MapPin size={14} color="var(--green)" />
+            <span style={{ fontSize: 13, color: 'var(--green)', fontWeight: 600 }}>
+              Pedido para Mesa {mesaActual.numero}
+            </span>
+          </div>
+        )}
+
         {/* Items */}
         <div style={{
           background: 'var(--surface)', border: '1px solid var(--border)',
@@ -66,7 +87,6 @@ export default function Checkout() {
             <div key={i.id} style={{
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               padding: '14px 20px', borderBottom: '1px solid var(--border)',
-              transition: 'background 0.15s',
             }}>
               <div>
                 <p style={{ fontWeight: 500, fontSize: 14, color: 'var(--text)' }}>{i.nombre}</p>
@@ -75,10 +95,7 @@ export default function Checkout() {
                 </p>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                <span style={{
-                  color: 'var(--gold)', fontWeight: 700, fontSize: 15,
-                  fontFamily: 'Cormorant Garamond, serif',
-                }}>
+                <span style={{ color: 'var(--gold)', fontWeight: 700, fontSize: 15, fontFamily: 'Cormorant Garamond, serif' }}>
                   Bs. {(Number(i.precio) * i.cantidad).toFixed(2)}
                 </span>
                 <button onClick={() => removeItem(i.id)} style={{
@@ -95,16 +112,12 @@ export default function Checkout() {
             </div>
           ))}
 
-          {/* Total */}
           <div style={{
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             padding: '16px 20px', background: 'var(--surface2)',
           }}>
             <span style={{ fontWeight: 600, color: 'var(--text)' }}>Total</span>
-            <span style={{
-              fontSize: 24, fontWeight: 700, color: 'var(--gold)',
-              fontFamily: 'Cormorant Garamond, serif',
-            }}>
+            <span style={{ fontSize: 24, fontWeight: 700, color: 'var(--gold)', fontFamily: 'Cormorant Garamond, serif' }}>
               Bs. {total.toFixed(2)}
             </span>
           </div>
@@ -120,8 +133,8 @@ export default function Checkout() {
           </p>
           <div style={{ display: 'flex', gap: 10 }}>
             {[
-              { value: 'qr',       label: 'Pago QR',   Icon: QrCode   },
-              { value: 'efectivo', label: 'Efectivo',  Icon: Banknote },
+              { value: 'qr',       label: 'Pago QR',  Icon: QrCode   },
+              { value: 'efectivo', label: 'Efectivo', Icon: Banknote },
             ].map(({ value, label, Icon }) => {
               const active = metodoPago === value;
               return (
@@ -133,8 +146,7 @@ export default function Checkout() {
                   border: `1.5px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
                   color: active ? 'var(--accent-light)' : 'var(--text-muted)',
                   display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
-                  fontWeight: active ? 600 : 400,
-                  transition: 'all 0.18s',
+                  fontWeight: active ? 600 : 400, transition: 'all 0.18s',
                   boxShadow: active ? '0 3px 12px rgba(207,100,48,0.2)' : 'none',
                 }}>
                   <Icon size={22} />
@@ -148,8 +160,7 @@ export default function Checkout() {
         {error && (
           <div style={{
             background: 'var(--danger-bg)', border: '1px solid rgba(201,92,92,0.3)',
-            color: 'var(--danger)', borderRadius: 8,
-            padding: '10px 14px', marginBottom: 16, fontSize: 13,
+            color: 'var(--danger)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13,
           }}>
             {error}
           </div>
@@ -166,12 +177,7 @@ export default function Checkout() {
         </button>
       </div>
 
-      <style>{`
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(12px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
+      <style>{`@keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }`}</style>
     </div>
   );
 }
