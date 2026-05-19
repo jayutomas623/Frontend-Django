@@ -1,7 +1,5 @@
-// frontend/src/pages/Kitchen.jsx
-// Tarjetas deslizables: derecha = avanzar estado, izquierda = cancelar
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Clock, CheckCircle, ChefHat, Package, MapPin, X } from 'lucide-react';
+import { Clock, CheckCircle, ChefHat, Package, MapPin, X, AlertCircle } from 'lucide-react';
 import api from '../api/axios';
 
 const COLS = [
@@ -28,6 +26,13 @@ const NEXT_LABEL = {
   listo:          'Entregar',
 };
 
+// Acciones permitidas por rol (para feedback visual)
+const ROL_ACCIONES = {
+  cajero:  ['deliver'],            // solo entregar (listo → entregado)
+  cocina:  ['start', 'ready'],     // iniciar y marcar listo
+  admin:   ['start', 'ready', 'deliver'],
+};
+
 function elapsed(creado_en) {
   const diff = Math.floor((Date.now() - new Date(creado_en).getTime()) / 1000);
   if (diff < 60) return `${diff}s`;
@@ -35,7 +40,7 @@ function elapsed(creado_en) {
   return `${Math.floor(diff / 3600)}h`;
 }
 
-// ── Modal de cancelación ──────────────────────────────────────────────────────
+// ── Modal de cancelación ───────────────────────────────────────────────────────
 function CancelModal({ order, onConfirm, onClose }) {
   const [motivo, setMotivo] = useState('');
   return (
@@ -76,27 +81,13 @@ function CancelModal({ order, onConfirm, onClose }) {
           }}
         />
         <div style={{ display: 'flex', gap: 10 }}>
-          <button
-            onClick={onClose}
-            style={{
-              flex: 1, padding: '10px', borderRadius: 8,
-              border: '1px solid var(--border)',
-              background: 'transparent', color: 'var(--text-muted)',
-              cursor: 'pointer', fontSize: 13,
-            }}
-          >
+          <button onClick={onClose} style={{ flex: 1, padding: '10px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13 }}>
             Volver
           </button>
           <button
             onClick={() => motivo.trim() && onConfirm(motivo.trim())}
             disabled={!motivo.trim()}
-            style={{
-              flex: 1, padding: '10px', borderRadius: 8, border: 'none',
-              background: motivo.trim() ? 'var(--danger)' : 'var(--surface3)',
-              color: motivo.trim() ? '#fff' : 'var(--text-dim)',
-              cursor: motivo.trim() ? 'pointer' : 'not-allowed',
-              fontSize: 13, fontWeight: 600,
-            }}
+            style={{ flex: 1, padding: '10px', borderRadius: 8, border: 'none', background: motivo.trim() ? 'var(--danger)' : 'var(--surface3)', color: motivo.trim() ? '#fff' : 'var(--text-dim)', cursor: motivo.trim() ? 'pointer' : 'not-allowed', fontSize: 13, fontWeight: 600 }}
           >
             Confirmar cancelación
           </button>
@@ -106,113 +97,116 @@ function CancelModal({ order, onConfirm, onClose }) {
   );
 }
 
-// ── Tarjeta deslizable ────────────────────────────────────────────────────────
+// ── Tarjeta deslizable ─────────────────────────────────────────────────────────
+// NUEVO: recibe onAdvance que devuelve Promise<boolean> (true=éxito, false=error)
+// Si falla, el card hace bounce back en lugar de quedarse invisible
 function SwipeCard({ order, onAdvance, onCancel, colColor }) {
-  const [swipeX, setSwipeX]   = useState(0);
-  const [swiping, setSwiping] = useState(false);
-  const [done, setDone]       = useState(false);
-  const [dir, setDir]         = useState(null); // 'right' | 'left'
-  const startX = useRef(0);
-  const cardRef = useRef(null);
+  const [swipeX, setSwipeX]     = useState(0);
+  const [swiping, setSwiping]   = useState(false);
+  const [animOut, setAnimOut]   = useState(false); // solo cuando éxito confirmado
+  const [dir, setDir]           = useState(null);
+  const startX    = useRef(0);
+  const cardRef   = useRef(null);
   const THRESHOLD = 90;
 
-  const user     = JSON.parse(localStorage.getItem('user') || '{}');
-  const isStaff  = ['cajero', 'cocina', 'admin'].includes(user.rol);
-  const isUrgent = order.estado === 'confirmado' &&
+  const user      = JSON.parse(localStorage.getItem('user') || '{}');
+  const isStaff   = ['cajero', 'cocina', 'admin'].includes(user.rol);
+  const rolAcciones = ROL_ACCIONES[user.rol] || [];
+  const isUrgent  = order.estado === 'confirmado' &&
     (Date.now() - new Date(order.creado_en).getTime()) / 1000 > 600;
 
-  const canSwipe = isStaff && !done;
+  // ¿puede este rol deslizar esta tarjeta?
+  const nextEstado    = NEXT[order.estado];
+  const nextAction    = nextEstado ? ACTION_MAP[nextEstado] : null;
+  const canSwipeRight = isStaff && nextAction && rolAcciones.includes(nextAction);
+  const cancelable    = ['en_espera', 'confirmado', 'en_preparacion'].includes(order.estado);
+  const canSwipeLeft  = isStaff && cancelable;
+  const canSwipe      = canSwipeRight || canSwipeLeft;
 
   const onPointerDown = (e) => {
-    if (!canSwipe) return;
+    if (!canSwipe || animOut) return;
     startX.current = e.clientX;
     setSwiping(true);
     try { cardRef.current?.setPointerCapture(e.pointerId); } catch {}
   };
 
   const onPointerMove = (e) => {
-    if (!swiping || !canSwipe) return;
+    if (!swiping || animOut) return;
     const delta = e.clientX - startX.current;
-    // Derecha: solo avanzar. Izquierda: solo si puede cancelarse
-    if (delta > 0) setSwipeX(Math.min(160, delta));
-    else           setSwipeX(Math.max(-160, delta));
+    if (delta > 0 && canSwipeRight) setSwipeX(Math.min(160, delta));
+    else if (delta < 0 && canSwipeLeft) setSwipeX(Math.max(-160, delta));
   };
 
-  const onPointerUp = () => {
+  const onPointerUp = async () => {
     if (!swiping) return;
     setSwiping(false);
     const abs = Math.abs(swipeX);
+
     if (abs >= THRESHOLD) {
-      if (swipeX > 0) {
-        // Deslizó derecha → avanzar
-        setDir('right');
-        setDone(true);
-        setSwipeX(300);
-        setTimeout(() => onAdvance(order.id, NEXT[order.estado]), 400);
-      } else {
-        // Deslizó izquierda → cancelar (solo si el estado lo permite)
-        const cancelable = ['en_espera', 'confirmado', 'en_preparacion'].includes(order.estado);
-        if (cancelable) {
-          setDir('left');
-          setDone(true);
-          setSwipeX(-300);
-          setTimeout(() => onCancel(order), 400);
+      if (swipeX > 0 && canSwipeRight) {
+        // Intenta avanzar — si falla, bounce back
+        const ok = await onAdvance(order.id, nextEstado);
+        if (ok) {
+          setDir('right');
+          setAnimOut(true);
+          setSwipeX(300);
         } else {
-          setSwipeX(0);
+          setSwipeX(0); // bounce back
         }
+      } else if (swipeX < 0 && canSwipeLeft) {
+        setDir('left');
+        setAnimOut(true);
+        setSwipeX(-300);
+        setTimeout(() => onCancel(order), 400);
+      } else {
+        setSwipeX(0);
       }
     } else {
       setSwipeX(0);
     }
   };
 
-  const progress = Math.min(1, Math.abs(swipeX) / THRESHOLD);
-  const goingRight = swipeX > 0;
-  const goingLeft  = swipeX < 0;
-  const cancelable = ['en_espera', 'confirmado', 'en_preparacion'].includes(order.estado);
+  const progress    = Math.min(1, Math.abs(swipeX) / THRESHOLD);
+  const goingRight  = swipeX > 0;
+  const goingLeft   = swipeX < 0;
+
+  // Etiqueta de ayuda según el rol
+  const hintLabel = canSwipeRight
+    ? `→ ${NEXT_LABEL[order.estado]}`
+    : canSwipeLeft
+      ? '← Cancelar'
+      : user.rol === 'cajero' && order.estado !== 'listo'
+        ? 'Acción de cocina'
+        : '';
 
   return (
-    <div style={{
-      position: 'relative', borderRadius: 12,
-      marginBottom: 12, overflow: 'hidden',
-      touchAction: 'pan-y', userSelect: 'none',
-    }}>
+    <div style={{ position: 'relative', borderRadius: 12, marginBottom: 12, overflow: 'hidden', touchAction: 'pan-y', userSelect: 'none' }}>
 
-      {/* Fondo derecha (avanzar) */}
+      {/* Fondo derecha */}
       <div style={{
         position: 'absolute', inset: 0, borderRadius: 12,
         background: `${colColor}22`,
-        display: 'flex', alignItems: 'center', justifyContent: 'flex-start',
-        paddingLeft: 20,
+        display: 'flex', alignItems: 'center', justifyContent: 'flex-start', paddingLeft: 20,
         opacity: goingRight ? progress : 0,
         transition: swiping ? 'none' : 'opacity 0.2s',
         pointerEvents: 'none',
       }}>
-        <span style={{
-          color: colColor, fontWeight: 800, fontSize: 13,
-          transform: `scale(${0.8 + 0.2 * progress})`,
-          transition: swiping ? 'none' : 'transform 0.2s',
-        }}>
+        <span style={{ color: colColor, fontWeight: 800, fontSize: 13, transform: `scale(${0.8 + 0.2 * progress})`, transition: swiping ? 'none' : 'transform 0.2s' }}>
           ✓ {NEXT_LABEL[order.estado]}
         </span>
       </div>
 
-      {/* Fondo izquierda (cancelar) */}
-      {cancelable && (
+      {/* Fondo izquierda */}
+      {canSwipeLeft && (
         <div style={{
           position: 'absolute', inset: 0, borderRadius: 12,
           background: 'rgba(201,92,92,0.15)',
-          display: 'flex', alignItems: 'center', justifyContent: 'flex-end',
-          paddingRight: 20,
+          display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 20,
           opacity: goingLeft ? progress : 0,
           transition: swiping ? 'none' : 'opacity 0.2s',
           pointerEvents: 'none',
         }}>
-          <span style={{
-            color: 'var(--danger)', fontWeight: 800, fontSize: 13,
-            transform: `scale(${0.8 + 0.2 * progress})`,
-            transition: swiping ? 'none' : 'transform 0.2s',
-          }}>
+          <span style={{ color: 'var(--danger)', fontWeight: 800, fontSize: 13, transform: `scale(${0.8 + 0.2 * progress})` }}>
             ✕ Cancelar
           </span>
         </div>
@@ -223,8 +217,10 @@ function SwipeCard({ order, onAdvance, onCancel, colColor }) {
         ref={cardRef}
         style={{
           transform: `translateX(${swipeX}px)`,
-          transition: swiping ? 'none' : (done ? 'transform 0.35s ease, opacity 0.35s' : 'transform 0.4s cubic-bezier(0.34,1.56,0.64,1)'),
-          opacity: done ? 0 : 1,
+          transition: swiping ? 'none' : (animOut
+            ? 'transform 0.35s ease, opacity 0.35s'
+            : 'transform 0.4s cubic-bezier(0.34,1.56,0.64,1)'),
+          opacity: animOut ? 0 : 1,
           background: 'var(--surface)',
           border: `1px solid ${isUrgent ? 'rgba(201,92,92,0.55)' : 'var(--border)'}`,
           borderLeft: `4px solid ${colColor}`,
@@ -238,16 +234,16 @@ function SwipeCard({ order, onAdvance, onCancel, colColor }) {
         onPointerUp={onPointerUp}
         onPointerLeave={onPointerUp}
       >
-
-        {/* Hint de swipe (visible solo si no se ha deslizado aún) */}
-        {canSwipe && swipeX === 0 && !done && (
+        {/* Hint de swipe o aviso de permisos */}
+        {swipeX === 0 && !animOut && (
           <div style={{
-            position: 'absolute', top: 8, right: 10,
-            fontSize: 10, color: 'rgba(255,255,255,0.22)',
+            position: 'absolute', top: 7, right: 10,
+            fontSize: 10,
+            color: canSwipe ? 'rgba(255,255,255,0.22)' : 'rgba(201,92,92,0.45)',
             display: 'flex', alignItems: 'center', gap: 3,
             pointerEvents: 'none',
           }}>
-            ← desliza →
+            {hintLabel}
           </div>
         )}
 
@@ -260,12 +256,9 @@ function SwipeCard({ order, onAdvance, onCancel, colColor }) {
               </p>
               {order.mesa_numero && (
                 <span style={{
-                  display: 'flex', alignItems: 'center', gap: 4,
-                  fontSize: 11, fontWeight: 700,
-                  background: 'rgba(74,139,92,0.15)',
-                  color: 'var(--green)',
-                  border: '1px solid rgba(74,139,92,0.35)',
-                  padding: '2px 8px', borderRadius: 12,
+                  display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 700,
+                  background: 'rgba(74,139,92,0.15)', color: 'var(--green)',
+                  border: '1px solid rgba(74,139,92,0.35)', padding: '2px 8px', borderRadius: 12,
                 }}>
                   <MapPin size={10} /> Mesa {order.mesa_numero}
                 </span>
@@ -293,10 +286,7 @@ function SwipeCard({ order, onAdvance, onCancel, colColor }) {
         {/* Items */}
         <div style={{ marginBottom: 12 }}>
           {order.items.map((item, idx) => (
-            <div key={idx} style={{
-              display: 'flex', justifyContent: 'space-between',
-              padding: '6px 0', borderBottom: '1px solid var(--border)',
-            }}>
+            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
               <span style={{ fontSize: 13, color: 'var(--text)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 {item.tipo === 'envasado' ? <Package size={12} color="var(--text-dim)" /> : '🍽'}
                 {item.cantidad}× {item.producto_nombre}
@@ -313,17 +303,16 @@ function SwipeCard({ order, onAdvance, onCancel, colColor }) {
           <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', fontFamily: 'Cormorant Garamond, serif' }}>
             Total: Bs. {parseFloat(order.total).toFixed(2)}
           </span>
-          {/* Indicador visual del próximo estado */}
           {isStaff && (
-            <span style={{ fontSize: 11, color: colColor, opacity: 0.7 }}>
-              → {NEXT_LABEL[order.estado]}
+            <span style={{ fontSize: 11, color: canSwipe ? colColor : 'var(--text-dim)', opacity: 0.7 }}>
+              {canSwipeRight ? `→ ${NEXT_LABEL[order.estado]}` : canSwipeLeft ? '← cancelar' : '—'}
             </span>
           )}
         </div>
       </div>
 
-      {/* Overlay de éxito post-swipe */}
-      {done && (
+      {/* Overlay éxito post-swipe */}
+      {animOut && (
         <div style={{
           position: 'absolute', inset: 0, borderRadius: 12,
           background: dir === 'right' ? `${colColor}20` : 'rgba(201,92,92,0.15)',
@@ -339,12 +328,18 @@ function SwipeCard({ order, onAdvance, onCancel, colColor }) {
   );
 }
 
-// ── Componente principal ──────────────────────────────────────────────────────
+// ── Componente principal ───────────────────────────────────────────────────────
 export default function Kitchen() {
   const [orders,      setOrders]      = useState([]);
   const [loading,     setLoading]     = useState(true);
-  const [cancelOrder, setCancelOrder] = useState(null); // pedido pendiente de cancelar
+  const [cancelOrder, setCancelOrder] = useState(null);
+  const [flashMsg,    setFlashMsg]    = useState(null); // { text, ok }
   const prevIds = useRef(new Set());
+
+  const showFlash = (text, ok = false) => {
+    setFlashMsg({ text, ok });
+    setTimeout(() => setFlashMsg(null), 4000);
+  };
 
   const fetchOrders = useCallback(async () => {
     try {
@@ -378,18 +373,24 @@ export default function Kitchen() {
     return () => clearInterval(iv);
   }, []);
 
+  // Devuelve true si la acción fue exitosa, false si falló
+  // Cuando falla, la SwipeCard hace bounce back automáticamente
   const advance = async (id, nextEstado) => {
     const action = ACTION_MAP[nextEstado];
-    if (!action) return;
+    if (!action) return false;
     try {
       await api.patch(`/orders/monitor/${id}/action/`, { action });
       fetchOrders();
-    } catch (e) { console.error(e); }
+      return true;
+    } catch (e) {
+      const msg = e.response?.data?.detail || 'No tienes permiso para esta acción';
+      showFlash(msg, false);
+      fetchOrders(); // recarga para que la tarjeta vuelva al estado original
+      return false;
+    }
   };
 
-  const handleCancelRequest = (order) => {
-    setCancelOrder(order);
-  };
+  const handleCancelRequest  = (order) => setCancelOrder(order);
 
   const handleCancelConfirm = async (motivo) => {
     if (!cancelOrder) return;
@@ -400,7 +401,10 @@ export default function Kitchen() {
       });
       setCancelOrder(null);
       fetchOrders();
-    } catch (e) { console.error(e); }
+      showFlash('Pedido cancelado correctamente.', true);
+    } catch (e) {
+      showFlash(e.response?.data?.detail || 'Error al cancelar.', false);
+    }
   };
 
   const byCol = (key) => orders.filter(o => o.estado === key);
@@ -408,7 +412,6 @@ export default function Kitchen() {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
 
-      {/* Modal cancelación */}
       {cancelOrder && (
         <CancelModal
           order={cancelOrder}
@@ -441,6 +444,26 @@ export default function Kitchen() {
         </div>
       </header>
 
+      {/* Flash de error/éxito */}
+      {flashMsg && (
+        <div style={{
+          position: 'fixed', top: 72, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 300, padding: '11px 20px', borderRadius: 10,
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: flashMsg.ok ? 'rgba(74,139,92,0.15)' : 'rgba(201,92,92,0.15)',
+          border: `1px solid ${flashMsg.ok ? 'rgba(74,139,92,0.4)' : 'rgba(201,92,92,0.4)'}`,
+          color: flashMsg.ok ? 'var(--green)' : 'var(--danger)',
+          fontSize: 13, fontWeight: 600,
+          backdropFilter: 'blur(12px)',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+          animation: 'slideDown 0.3s ease',
+          whiteSpace: 'nowrap',
+        }}>
+          <AlertCircle size={15} />
+          {flashMsg.text}
+        </div>
+      )}
+
       {/* Leyenda de gestos */}
       <div style={{
         display: 'flex', justifyContent: 'center', gap: 24, padding: '10px 0',
@@ -460,39 +483,22 @@ export default function Kitchen() {
           Cargando pedidos...
         </div>
       ) : (
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(3, 1fr)',
-          gap: 20, padding: 24, minHeight: 'calc(100vh - 100px)',
-        }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 20, padding: 24, minHeight: 'calc(100vh - 100px)' }}>
           {COLS.map(col => {
             const colOrders = byCol(col.key);
             const Icon = col.icon;
             return (
               <div key={col.key}>
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16,
-                  paddingBottom: 12, borderBottom: `2px solid ${col.color}33`,
-                }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, paddingBottom: 12, borderBottom: `2px solid ${col.color}33` }}>
                   <Icon size={17} color={col.color} />
-                  <h3 style={{ fontSize: 16, fontWeight: 700, color: col.color }}>
-                    {col.label}
-                  </h3>
-                  <span style={{
-                    marginLeft: 'auto', background: `${col.color}22`,
-                    color: col.color, border: `1px solid ${col.color}44`,
-                    padding: '2px 10px', borderRadius: 20, fontSize: 12, fontWeight: 700,
-                  }}>
+                  <h3 style={{ fontSize: 16, fontWeight: 700, color: col.color }}>{col.label}</h3>
+                  <span style={{ marginLeft: 'auto', background: `${col.color}22`, color: col.color, border: `1px solid ${col.color}44`, padding: '2px 10px', borderRadius: 20, fontSize: 12, fontWeight: 700 }}>
                     {colOrders.length}
                   </span>
                 </div>
 
                 {colOrders.length === 0 ? (
-                  <div style={{
-                    padding: 28, textAlign: 'center', color: 'var(--text-dim)',
-                    fontSize: 13, borderRadius: 10,
-                    border: '1px dashed var(--border)', opacity: 0.5,
-                  }}>
+                  <div style={{ padding: 28, textAlign: 'center', color: 'var(--text-dim)', fontSize: 13, borderRadius: 10, border: '1px dashed var(--border)', opacity: 0.5 }}>
                     Sin pedidos
                   </div>
                 ) : (
@@ -513,8 +519,9 @@ export default function Kitchen() {
       )}
 
       <style>{`
-        @keyframes fadeIn  { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes slideUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes fadeIn   { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slideUp  { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes slideDown{ from { opacity: 0; transform: translate(-50%,-8px); } to { opacity: 1; transform: translate(-50%,0); } }
       `}</style>
     </div>
   );
