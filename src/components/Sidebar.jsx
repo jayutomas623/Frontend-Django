@@ -5,7 +5,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import {
   UtensilsCrossed, Banknote, LayoutDashboard,
   LogOut, ChevronLeft, ChevronRight, ClipboardList,
-  User, Package, Users, LayoutList, HelpCircle, Map,
+  User, Package, Users, LayoutList, HelpCircle, Map, Sparkles,
 } from 'lucide-react';
 import api from '../api/axios';
 
@@ -34,6 +34,7 @@ const NAV = {
     { label: 'Menú',        icon: UtensilsCrossed, path: '/menu'      },
     { label: 'Inventario',  icon: Package,         path: '/inventory' },
     { label: 'Empleados',   icon: Users,           path: '/employees' },
+    { label: 'Promociones', icon: Sparkles, path: '/promotions' },
   ],
 };
 

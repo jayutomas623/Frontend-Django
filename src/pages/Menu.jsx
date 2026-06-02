@@ -5,6 +5,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ShoppingCart, Plus, Search, X, Minus, MapPin, CheckCircle } from 'lucide-react';
 import { useCart } from '../context/CartContext';
 import api from '../api/axios';
+import RecommendationsBlock from '../components/RecommendationsBlock';
 
 export default function Menu() {
   const [products,   setProducts]   = useState([]);
@@ -112,6 +113,9 @@ export default function Menu() {
             </button>
           )}
         </div>
+
+        {/*Recomendaciones y promociones */}
+        <RecommendationsBlock />
 
         {/* Categorías */}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 26 }}>

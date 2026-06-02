@@ -13,6 +13,7 @@ import Layout         from './components/Layout';
 import Inventory      from './pages/Inventory';
 import Employees      from './pages/Employees';
 import TableMap       from './pages/TableMap';
+import Promotions from './pages/Promotions';
 
 function PrivateRoute({ children, roles }) {
   const token = localStorage.getItem('token');
@@ -50,6 +51,7 @@ export default function App() {
         {/* Admin */}
         <Route path="/admin"     element={<PrivateRoute roles={['admin']}><AdminDashboard /></PrivateRoute>} />
         <Route path="/employees" element={<PrivateRoute roles={['admin']}><Employees /></PrivateRoute>} />
+        <Route path="/promotions" element={<PrivateRoute roles={['admin']}><Promotions /></PrivateRoute>} />
 
         <Route path="*" element={<Navigate to="/login" />} />
       </Routes>
